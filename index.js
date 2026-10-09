@@ -19,7 +19,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Middleware de sécurité - vérifie la clé secrète pour les routes sensibles
+// ─── Middleware sécurité ───────────────────────────────────────────
 function verifyApiKey(req, res, next) {
   const apiKey = req.headers['x-api-key'];
   if (apiKey !== process.env.API_SECRET_KEY) {
@@ -28,7 +28,75 @@ function verifyApiKey(req, res, next) {
   next();
 }
 
-// GET /pharmacies - récupérer toutes les pharmacies
+// ─── Haversine (distance en km entre 2 coordonnées GPS) ───────────
+function haversineDistance(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ─── GET /pharmacies/nearby ────────────────────────────────────────
+// ⚠️ DOIT être placée AVANT GET /pharmacies/:id sinon Express
+// interprétera "nearby" comme un :id
+app.get('/pharmacies/nearby', async (req, res) => {
+  try {
+    let { lat, lng, radius = 5 } = req.query;
+    lat = parseFloat(lat);
+    lng = parseFloat(lng);
+    radius = parseFloat(radius);
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({ error: 'lat et lng sont requis' });
+    }
+
+    // Récupère toutes les pharmacies depuis Firestore
+    const snapshot = await db.collection('pharmacies').get();
+    const allPharmacies = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    // Filtre + calcule distance pour chaque pharmacie
+    const withDistance = allPharmacies
+      .filter(p => p.latitude && p.longitude) // ignore les docs sans coords
+      .map(p => ({
+        ...p,
+        distance: haversineDistance(lat, lng, p.latitude, p.longitude),
+      }));
+
+    let nearby = withDistance
+      .filter(p => p.distance <= radius)
+      .sort((a, b) => a.distance - b.distance);
+
+    // Auto-élargissement si moins de 3 résultats
+    let expanded = false;
+    if (nearby.length < 3 && radius < 20) {
+      radius = radius * 2;
+      nearby = withDistance
+        .filter(p => p.distance <= radius)
+        .sort((a, b) => a.distance - b.distance);
+      expanded = true;
+    }
+
+    res.json({
+      data: nearby,
+      radiusUsed: radius,
+      expanded,
+      total: nearby.length,
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── GET /pharmacies ───────────────────────────────────────────────
 app.get('/pharmacies', async (req, res) => {
   try {
     const snapshot = await db.collection('pharmacies').get();
@@ -42,7 +110,7 @@ app.get('/pharmacies', async (req, res) => {
   }
 });
 
-// GET /pharmacies/:id - récupérer une pharmacie précise
+// ─── GET /pharmacies/:id ───────────────────────────────────────────
 app.get('/pharmacies/:id', async (req, res) => {
   try {
     const doc = await db.collection('pharmacies').doc(req.params.id).get();
@@ -55,7 +123,7 @@ app.get('/pharmacies/:id', async (req, res) => {
   }
 });
 
-// POST /pharmacies - ajouter une pharmacie
+// ─── POST /pharmacies ──────────────────────────────────────────────
 app.post('/pharmacies', verifyApiKey, async (req, res) => {
   try {
     const data = req.body;
@@ -66,7 +134,7 @@ app.post('/pharmacies', verifyApiKey, async (req, res) => {
   }
 });
 
-// PUT /pharmacies/:id - modifier une pharmacie
+// ─── PUT /pharmacies/:id ───────────────────────────────────────────
 app.put('/pharmacies/:id', verifyApiKey, async (req, res) => {
   try {
     const data = req.body;
@@ -77,7 +145,7 @@ app.put('/pharmacies/:id', verifyApiKey, async (req, res) => {
   }
 });
 
-// DELETE /pharmacies/:id - supprimer une pharmacie
+// ─── DELETE /pharmacies/:id ────────────────────────────────────────
 app.delete('/pharmacies/:id', verifyApiKey, async (req, res) => {
   try {
     await db.collection('pharmacies').doc(req.params.id).delete();
@@ -87,7 +155,7 @@ app.delete('/pharmacies/:id', verifyApiKey, async (req, res) => {
   }
 });
 
-// Route de test
+// ─── Route de test ─────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({ message: 'API PharmaDakar fonctionne !' });
 });
